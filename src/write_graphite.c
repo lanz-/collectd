@@ -1,11 +1,11 @@
 /**
  * collectd - src/write_graphite.c
+ * Copyright (C) 2016       Alexey Starkov
  * Copyright (C) 2012       Pierre-Yves Ritschard
  * Copyright (C) 2011       Scott Sanders
  * Copyright (C) 2009       Paul Sadauskas
  * Copyright (C) 2009       Doug MacEachern
  * Copyright (C) 2007-2013  Florian octo Forster
- * Copyright (C) 2016       Alexey Starkov
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -112,9 +112,11 @@ struct wg_callback {
   char *node;
   char *service;
   char *protocol;
+
   char *ca_file_path;
   char *cert_file_path;
   char *key_file_path;
+
   _Bool log_send_errors;
   char *prefix;
   char *postfix;
@@ -219,6 +221,7 @@ static void wg_force_reconnect_check(struct wg_callback *cb) {
 
   /* here we should close connection on next */
   wg_close_connection(cb);
+
   cb->last_reconnect_time = now;
   cb->reconnect_interval_reached = 1;
 
@@ -359,7 +362,9 @@ static int wg_callback_init(struct wg_callback *cb) {
       snprintf(connerr, sizeof(connerr), "failed to connect to remote "
                                          "host: %s",
                sstrerror(errno, errbuf, sizeof(errbuf)));
+
       wg_close_connection(cb);
+
       continue;
     }
 
@@ -399,6 +404,34 @@ static int wg_callback_init(struct wg_callback *cb) {
   return (0);
 }
 
+/* NOTE: You must hold cb->send_lock when calling this function! */
+static int wg_flush_nolock(cdtime_t timeout, struct wg_callback *cb) {
+  int status;
+
+  DEBUG("write_graphite plugin: wg_flush_nolock: timeout = %.3f; "
+        "send_buf_fill = %zu;",
+        (double)timeout, cb->send_buf_fill);
+
+  /* timeout == 0  => flush unconditionally */
+  if (timeout > 0) {
+    cdtime_t now;
+
+    now = cdtime();
+    if ((cb->send_buf_init_time + timeout) > now)
+      return (0);
+  }
+
+  if (cb->send_buf_fill == 0) {
+    cb->send_buf_init_time = cdtime();
+    return (0);
+  }
+
+  status = wg_send_buffer(cb);
+  wg_reset_buffer(cb);
+
+  return (status);
+}
+
 static void wg_callback_free(void *data) {
   struct wg_callback *cb;
 
@@ -427,6 +460,13 @@ static void wg_callback_free(void *data) {
 
   if (cb->ssl_context != NULL)
     SSL_CTX_free(cb->ssl_context);
+
+  sfree(cb->name);
+  sfree(cb->node);
+  sfree(cb->protocol);
+  sfree(cb->service);
+  sfree(cb->prefix);
+  sfree(cb->postfix);
 
   pthread_mutex_destroy(&cb->send_lock);
 
@@ -583,15 +623,19 @@ static int wg_config_node(oconfig_item_t *ci) {
     return (-1);
   }
   cb->sock_fd = -1;
+
   cb->ssl_context = NULL;
   cb->ssl = NULL;
+
   cb->name = NULL;
   cb->node = strdup(WG_DEFAULT_NODE);
   cb->service = strdup(WG_DEFAULT_SERVICE);
   cb->protocol = strdup(WG_DEFAULT_PROTOCOL);
+
   cb->ca_file_path = NULL;
   cb->cert_file_path = NULL;
   cb->key_file_path = NULL;
+
   cb->last_reconnect_time = cdtime();
   cb->reconnect_interval = 0;
   cb->reconnect_interval_reached = 0;

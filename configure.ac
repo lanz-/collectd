@@ -4830,6 +4830,7 @@ PKG_CHECK_MODULES([LIBSSL], [libssl],
   [with_libssl="yes"],
   [with_libssl="no (pkg-config could not find libssl)"]
 )
+AM_CONDITIONAL(BUILD_WITH_LIBSSL, test "x$with_libssl" = "xyes")
 # }}}
 
 # --with-libstatgrab {{{
